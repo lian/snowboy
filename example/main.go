@@ -2,33 +2,15 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"os"
-	"os/signal"
+	"time"
 	"unsafe"
 
 	"github.com/lian/snowboy"
-	"github.com/xlab/portaudio-go/portaudio"
-)
-
-var (
-	samplesPerChannel uint    = 512
-	sampleRate        float64 = 16000
-	channels          int32   = 1
-	sampleFormat              = portaudio.PaInt16
+	"github.com/lian/snowboy/openal"
 )
 
 func main() {
-	if err := portaudio.Initialize(); paError(err) {
-		log.Fatalln("PortAudio init error:", paErrorText(err))
-	}
-	defer func() {
-		if err := portaudio.Terminate(); paError(err) {
-			log.Println("PortAudio term error:", paErrorText(err))
-		}
-	}()
-
-	l := &Listener{}
+	fmt.Println("openal test")
 
 	sb := snowboy.NewSnowboyDetect("resources/common.res", "resources/alexa.umdl")
 	sb.SetSensitivity("0.5")
@@ -36,65 +18,35 @@ func main() {
 	fmt.Println("loaded snowboy", sb)
 	defer snowboy.DeleteSnowboyDetect(sb)
 
-	channels = int32(sb.NumChannels())
-	sampleRate = float64(sb.SampleRate())
-	if sb.BitsPerSample() == 16 {
-		sampleFormat = portaudio.PaInt16
+	var format openal.Format
+	frequency := uint32(sb.SampleRate())
+	captureSize := 512 * 4
+	captureSizeMax := captureSize * 2
+
+	if sb.BitsPerSample() == 16 && sb.NumChannels() == 1 {
+		format = openal.FormatMono16
+	} else {
+		panic("snowboy uses more than 1 channel")
 	}
 
-	l.Snowboy = sb
+	mic := openal.CaptureOpenDevice("", frequency, format, uint32(captureSizeMax*format.SampleSize()))
+	mic.CaptureStart()
+	defer mic.CloseDevice()
 
-	var stream *portaudio.Stream
-	if err := portaudio.OpenDefaultStream(&stream, channels, 0, sampleFormat, sampleRate,
-		samplesPerChannel, l.paCallback, nil); paError(err) {
-		log.Fatalln("PortAudio error:", paErrorText(err))
-	}
-	defer func() {
-		if err := portaudio.CloseStream(stream); paError(err) {
-			log.Println("[WARN] PortAudio error:", paErrorText(err))
+	samples := make([]int16, captureSizeMax)
+	openalSamplesPointer := unsafe.Pointer(&samples[0])
+	snowboySamplesPointer := snowboy.SwigcptrInt16_t(openalSamplesPointer)
+
+	ticker := time.NewTicker(time.Millisecond * 100)
+
+	for _ = range ticker.C {
+		numSamples := int(mic.CapturedSamples())
+		if numSamples >= captureSize {
+			mic.CaptureToInt16Pointer(openalSamplesPointer, numSamples)
+			res := sb.RunDetection(snowboySamplesPointer, numSamples)
+			if res > 0 {
+				fmt.Println("found", res)
+			}
 		}
-	}()
-
-	if err := portaudio.StartStream(stream); paError(err) {
-		log.Fatalln("PortAudio error:", paErrorText(err))
 	}
-	defer func() {
-		if err := portaudio.StopStream(stream); paError(err) {
-			log.Fatalln("[WARN] PortAudio error:", paErrorText(err))
-		}
-	}()
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	for sig := range c {
-		log.Println("exiting", sig)
-		os.Exit(0)
-	}
-}
-
-type Listener struct {
-	Snowboy snowboy.SnowboyDetect
-}
-
-// paCallback: for simplicity reasons we process raw audio with sphinx in the this stream callback,
-// never do that for any serious applications, use a buffered channel instead.
-func (l *Listener) paCallback(input unsafe.Pointer, _ unsafe.Pointer, sampleCount uint, _ *portaudio.StreamCallbackTimeInfo, _ portaudio.StreamCallbackFlags, _ unsafe.Pointer) int32 {
-	length := int(sampleCount) * int(channels)
-	//in := (*(*[1 << 24]int16)(input))[:length]
-	//log.Println("data", in)
-	res := l.Snowboy.RunDetection(snowboy.SwigcptrInt16_t(input), length)
-	if res > 0 {
-		fmt.Println("found", res)
-	}
-
-	//return int32(portaudio.PaAbort)
-	return int32(portaudio.PaContinue)
-}
-
-func paError(err portaudio.Error) bool {
-	return portaudio.ErrorCode(err) != portaudio.PaNoError
-}
-
-func paErrorText(err portaudio.Error) string {
-	return portaudio.GetErrorText(err)
 }
