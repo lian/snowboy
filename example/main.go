@@ -12,10 +12,14 @@ import (
 func main() {
 	fmt.Println("openal test")
 
-	sb := snowboy.NewSnowboyDetect("resources/common.res", "resources/alexa.umdl")
-	sb.SetSensitivity("0.5")
+	words := snowboy.NewHotwords()
+	words.Add("alexa", "resources/alexa.umdl", "0.5")
+	words.Add("licht-an", "resources/licht-an.pmdl", "0.5")
+	words.Add("licht-aus", "resources/licht-aus.pmdl", "0.5")
+
+	sb := snowboy.NewSnowboyDetect("resources/common.res", words.ModelStr())
+	sb.SetSensitivity(words.SensitivityStr())
 	sb.SetAudioGain(1)
-	fmt.Println("loaded snowboy", sb)
 	defer snowboy.DeleteSnowboyDetect(sb)
 
 	var format openal.Format
@@ -45,7 +49,7 @@ func main() {
 			mic.CaptureToInt16Pointer(openalSamplesPointer, numSamples)
 			res := sb.RunDetection(snowboySamplesPointer, numSamples)
 			if res > 0 {
-				fmt.Println("found", res)
+				fmt.Println("found:", res, words.GetNameByIndex(res-1))
 			}
 		}
 	}
